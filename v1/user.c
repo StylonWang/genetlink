@@ -175,8 +175,8 @@ int main()
    /*compose message */
    na = (struct nlattr *)GENLMSG_DATA(&req);
    na->nla_type = 1;       //N_ATTR_MSG1
-   char *message = "hello world!"; //message
-   int mlength = 14;
+   char *message = "hello world from user space!"; //message
+   int mlength = strlen(message)+1;
    printf("message len=%d\n", strlen(message));
    na->nla_len = mlength + NLA_HDRLEN; //message length
    memcpy(NLA_DATA(na), message, mlength);
