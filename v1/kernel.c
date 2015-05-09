@@ -137,13 +137,16 @@ int doc_exmpl_echo_bin(struct sk_buff *skb_2, struct genl_info *info)
        int flags, 
        u8 command index (why do we need this?)
     */
-   	msg_head = genlmsg_put(skb, 0, info->snd_seq+1, &N_gnl_family, 0, N_CMD_ECHO);
+   	msg_head = genlmsg_put(skb, 0, info->snd_seq+1, &N_gnl_family, 0, N_CMD_ECHO_BIN);
     if (msg_head == NULL) {
         rc = -ENOMEM;
         goto out;
     }
+
     /* add a DOC_EXMPL_A_MSG attribute (actual value to be sent) */
-    rc = nla_put_string(skb, N_ATTR_MSG1, "hello world from kernel space");
+    struct N_message rmsg = { .sender = "kernel", .event = 5 };
+    rmsg.param[N_PARAM_MAX-1] = 6;
+    rc = nla_put(skb, N_ATTR_MSG2, sizeof(rmsg), &rmsg);
     if (rc != 0)
         goto out;
 

@@ -218,8 +218,9 @@ int main()
    rep_len = GENLMSG_PAYLOAD(&ans.n);
    /*parse reply message */
    na = (struct nlattr *)GENLMSG_DATA(&ans);
-   char *result = (char *)NLA_DATA(na);
-   printf("kernel says: %s\n", result);
+   //char *result = (char *)NLA_DATA(na);
+   struct N_message *rmsg = (struct N_message *)NLA_DATA(na);
+   printf("kernel says: %s, %d, %d\n", rmsg->sender, rmsg->event, rmsg->param[N_PARAM_MAX-1]);
 
    close(nl_sd);
 }
