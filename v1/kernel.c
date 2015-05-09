@@ -37,6 +37,8 @@ int doc_exmpl_echo(struct sk_buff *skb_2, struct genl_info *info)
     if (info == NULL)
             goto out;
 
+    printk("cmd=%d\n", info->genlhdr->cmd);
+
     /*for each attribute there is an index in info->attrs which points to a nlattr structure
      *in this structure the data is given
      */
@@ -103,6 +105,8 @@ int doc_exmpl_echo_bin(struct sk_buff *skb_2, struct genl_info *info)
 	
     if (info == NULL)
             goto out;
+
+    printk("cmd=%d\n", info->genlhdr->cmd);
 
     /*for each attribute there is an index in info->attrs which points to a nlattr structure
      *in this structure the data is given
