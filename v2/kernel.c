@@ -13,8 +13,8 @@ struct EH_group {
     struct EH_group_member {
 
         u32 pid;
-        char who[N_NAME_MAX];
-        int param[N_PARAM_MAX];
+        char who[EH_NAME_MAX];
+        int param[EH_PARAM_MAX];
 
     } members[EH_GROUP_MEMBER_MAX];
 };
@@ -31,11 +31,11 @@ static struct EH_context {
 /* attribute policy: defines which attribute has which type (e.g int, char * etc)
  * possible values defined in net/netlink.h 
  */
-static struct nla_policy EH_genl_policy[N_ATTR_MAX + 1] = {
-	[N_ATTR_REGISTER] = { .type = NLA_BINARY, .len = sizeof(struct EH_message_register) },
-	[N_ATTR_UNREGISTER] = { .type = NLA_BINARY, .len = sizeof(struct EH_message_unregister) },
-	[N_ATTR_EVENT] = { .type = NLA_BINARY, .len = sizeof(struct EH_message_event) },
-	[N_ATTR_RESULT] = { .type = NLA_U32, },
+static struct nla_policy EH_genl_policy[EH_ATTR_MAX + 1] = {
+	[EH_ATTR_REGISTER] = { .type = NLA_BINARY, .len = sizeof(struct EH_message_register) },
+	[EH_ATTR_UNREGISTER] = { .type = NLA_BINARY, .len = sizeof(struct EH_message_unregister) },
+	[EH_ATTR_EVENT] = { .type = NLA_BINARY, .len = sizeof(struct EH_message_event) },
+	[EH_ATTR_RESULT] = { .type = NLA_U32, },
 };
 
 #define VERSION_NR 1
@@ -45,7 +45,7 @@ static struct genl_family EH_gnl_family = {
 	.hdrsize = 0,
 	.name = "EVENT_HUB",        //the name of this family, used by userspace application
 	.version = VERSION_NR,                   //version number  
-	.maxattr = N_ATTR_MAX,
+	.maxattr = EH_ATTR_MAX,
 };
 
 static int EH_get_group_index(int group_id)
@@ -95,7 +95,7 @@ static int EH_register(const struct EH_message_register *msg, struct genl_info *
         goto out;
     }
 
-    member = EH_get_member_index(group, info->pid);
+    member = EH_get_member_index(group, info->snd_pid);
     if(-1==member) {
         // allocate a slot for new member
         for(i=0; i<EH_GROUP_MEMBER_MAX; ++i) {
@@ -114,7 +114,7 @@ static int EH_register(const struct EH_message_register *msg, struct genl_info *
     // initialize group
     g_context.groups[group].group_id = msg->group_id;
     // initialize group member
-    g_context.groups[group].members[member].pid = info->pid;
+    g_context.groups[group].members[member].pid = info->snd_pid;
     memcpy(&g_context.groups[group].members[member].who, 
            &msg->who, sizeof(g_context.groups[group].members[member].who));
     memcpy(&g_context.groups[group].members[member].param, 
@@ -147,7 +147,6 @@ static int EH_unregister(const struct EH_message_unregister *msg, struct genl_in
 {
     int group=-1, member=-1;
     int rc=0;
-    int i;
 
     PRINT_FLOW("+\n");
 
@@ -158,7 +157,7 @@ static int EH_unregister(const struct EH_message_unregister *msg, struct genl_in
         goto out;
     }
 
-    member = EH_get_member_index(group, info->pid);
+    member = EH_get_member_index(group, info->snd_pid);
     if(-1==member) {
         PRINT_ERR("not in this group\n");
         rc = -EINVAL;
@@ -181,7 +180,53 @@ out:
     return rc;
 }
 
-static int EH_send_event(const struct EH_message_event *msg, struct genl_info *info)
+static int EH_send_event_to(int group, int member, const struct EH_message_event *msg, struct genl_info *info)
+{
+    struct sk_buff *skb;
+    int rc=0;
+	void *msg_head;
+
+    /* send a message back*/
+    /* allocate some memory, since the size is not yet known use NLMSG_GOODSIZE*/	
+    skb = genlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
+    if (skb == NULL) {
+        rc = -ENOMEM;
+        goto out;
+    }
+
+    /* create the message headers */
+    /* arguments of genlmsg_put: 
+       struct sk_buff *, 
+       int (sending) pid, 
+       int sequence number, 
+       struct genl_family *, 
+       int flags, 
+       u8 command index (why do we need this?)
+    */
+   	msg_head = genlmsg_put(skb, 0, info->snd_seq+1, &EH_gnl_family, 0, EH_CMD_EVENT);
+    if (msg_head == NULL) {
+        rc = -ENOMEM;
+        goto out;
+    }
+    rc = nla_put(skb, EH_ATTR_EVENT, sizeof(*msg), msg);
+    if (rc != 0) {
+        goto out;
+    }
+
+    /* finalize the message */
+    genlmsg_end(skb, msg_head);
+
+    /* send the message back */
+    rc = genlmsg_unicast(genl_info_net(info), skb, g_context.groups[group].members[member].pid);
+    if (rc != 0) {
+       goto out;
+    }
+
+out:
+    return rc;
+}
+
+static int EH_send_event_to_group(const struct EH_message_event *msg, struct genl_info *info)
 {
     int group=-1, member=-1;
     int rc=0;
@@ -189,28 +234,31 @@ static int EH_send_event(const struct EH_message_event *msg, struct genl_info *i
 
     PRINT_FLOW("+\n");
 
-    group = EH_get_group_index(msg->group_id);
+    group = EH_get_group_index(msg->to_group_id);
     if(-1==group) { 
         PRINT_ERR("no such group.\n");
         rc = -EINVAL;
         goto out;
     }
 
-    member = EH_get_member_index(group, info->pid);
+    member = EH_get_member_index(group, info->snd_pid);
     if(-1==member) {
         PRINT_ERR("not in this group\n");
         rc = -EINVAL;
         goto out;
     }
 
-    // free member ship
-    g_context.groups[group].members[member].pid = 0;
-    memset(&g_context.groups[group].members[member].who, 
-           0, sizeof(g_context.groups[group].members[member].who));
-    memset(&g_context.groups[group].members[member].param, 
-           0, sizeof(g_context.groups[group].members[member].param));
+    for(i=0; i<EH_GROUP_MEMBER_MAX; ++i) {
+        if(i==member) continue; // do not send to myself
 
-    EH_cleanup_group(group);
+        rc = EH_send_event_to(group, member, msg, info);
+        if(rc) {
+            PRINT_ERR("cannot send event to %s %ld\n", 
+                      g_context.groups[group].members[member].who,
+                      (unsigned long)g_context.groups[group].members[member].pid
+                      );
+        }
+    }
 
     rc = 0; //success
     
@@ -224,13 +272,13 @@ static int do_cmd_register(struct sk_buff *skb_2, struct genl_info *info)
 {
     struct nlattr *na;
     struct sk_buff *skb;
-    int rc
+    int rc=0;
     u32 result;
 	void *msg_head;
     struct EH_message_register *msg;
 
     if (info == NULL) {
-        PRINT_DBG("info is null\n"); 
+        PRINT_ERR("info is null\n"); 
         goto out;
     }
     
@@ -239,11 +287,11 @@ static int do_cmd_register(struct sk_buff *skb_2, struct genl_info *info)
     /*for each attribute there is an index in info->attrs which points to a nlattr structure
      *in this structure the data is given
      */
-    na = info->attrs[N_ATTR_REGISTER];
+    na = info->attrs[EH_ATTR_REGISTER];
    	if (na) {
         msg = (struct EH_message_register *)nla_data(na);
         if (msg == NULL) {
-            PRINT_DBG("error while receiving data\n");
+            PRINT_ERR("error while receiving data\n");
             rc = -EINVAL;
             goto out;
         }
@@ -253,7 +301,7 @@ static int do_cmd_register(struct sk_buff *skb_2, struct genl_info *info)
         }
 	}
     else {
-	    PRINT_DBG("'register' no info->attrs\n");
+	    PRINT_ERR("'register' no info->attrs\n");
         goto out;
     }
 
@@ -276,7 +324,7 @@ static int do_cmd_register(struct sk_buff *skb_2, struct genl_info *info)
        int flags, 
        u8 command index (why do we need this?)
     */
-   	msg_head = genlmsg_put(skb, 0, info->snd_seq+1, &N_gnl_family, 0, EH_CMD_ECHO);
+   	msg_head = genlmsg_put(skb, 0, info->snd_seq+1, &EH_gnl_family, 0, EH_CMD_REGISTER);
     if (msg_head == NULL) {
         rc = -ENOMEM;
         goto out;
@@ -313,7 +361,7 @@ static int do_cmd_unregister(struct sk_buff *skb_2, struct genl_info *info)
     PRINT_FLOW("+\n");
 
     if (info == NULL) {
-        PRINT_DBG("info is null\n"); 
+        PRINT_ERR("info is null\n"); 
         goto out;
     }
     
@@ -322,11 +370,11 @@ static int do_cmd_unregister(struct sk_buff *skb_2, struct genl_info *info)
     /*for each attribute there is an index in info->attrs which points to a nlattr structure
      *in this structure the data is given
      */
-    na = info->attrs[N_ATTR_UNREGISTER];
+    na = info->attrs[EH_ATTR_UNREGISTER];
    	if (na) {
-        msg = (struct EH_message_register *)nla_data(na);
+        msg = (struct EH_message_unregister *)nla_data(na);
         if (msg == NULL) {
-            PRINT_DBG("error while receiving data\n");
+            PRINT_ERR("error while receiving data\n");
             rc = -EINVAL;
             goto out;
         }
@@ -336,7 +384,7 @@ static int do_cmd_unregister(struct sk_buff *skb_2, struct genl_info *info)
         }
 	}
     else {
-	    PRINT_DBG("'register' no info->attrs\n");
+	    PRINT_ERR("'register' no info->attrs\n");
         goto out;
     }
 
@@ -359,7 +407,7 @@ static int do_cmd_unregister(struct sk_buff *skb_2, struct genl_info *info)
        int flags, 
        u8 command index (why do we need this?)
     */
-   	msg_head = genlmsg_put(skb, 0, info->snd_seq+1, &N_gnl_family, 0, EH_CMD_ECHO);
+   	msg_head = genlmsg_put(skb, 0, info->snd_seq+1, &EH_gnl_family, 0, EH_CMD_UNREGISTER);
     if (msg_head == NULL) {
         rc = -ENOMEM;
         goto out;
@@ -395,7 +443,7 @@ static int do_cmd_event(struct sk_buff *skb_2, struct genl_info *info)
     PRINT_FLOW("+\n");
 
     if (info == NULL) {
-        PRINT_DBG("info is null\n"); 
+        PRINT_ERR("info is null\n"); 
         goto out;
     }
     
@@ -404,25 +452,25 @@ static int do_cmd_event(struct sk_buff *skb_2, struct genl_info *info)
     /*for each attribute there is an index in info->attrs which points to a nlattr structure
      *in this structure the data is given
      */
-    na = info->attrs[N_ATTR_EVENT];
+    na = info->attrs[EH_ATTR_EVENT];
    	if (na) {
         msg = (struct EH_message_event *)nla_data(na);
         if (msg == NULL) {
-            PRINT_DBG("error while receiving data\n");
+            PRINT_ERR("error while receiving data\n");
             rc = -EINVAL;
             goto out;
         }
-        if ( msg->group_id <=0 ) {
+        if ( msg->to_group_id <=0 ) {
             rc = -EINVAL;
             goto out; 
         }
 	}
     else {
-	    PRINT_DBG("'register' no info->attrs\n");
+	    PRINT_ERR("'register' no info->attrs\n");
         goto out;
     }
 
-    result = EH_send_event(msg, info);
+    result = EH_send_event_to_group(msg, info);
 
     /* send a message back*/
     /* allocate some memory, since the size is not yet known use NLMSG_GOODSIZE*/	
@@ -441,7 +489,7 @@ static int do_cmd_event(struct sk_buff *skb_2, struct genl_info *info)
        int flags, 
        u8 command index (why do we need this?)
     */
-   	msg_head = genlmsg_put(skb, 0, info->snd_seq+1, &N_gnl_family, 0, EH_CMD_ECHO);
+   	msg_head = genlmsg_put(skb, 0, info->snd_seq+1, &EH_gnl_family, 0, EH_CMD_EVENT);
     if (msg_head == NULL) {
         rc = -ENOMEM;
         goto out;
@@ -472,7 +520,7 @@ struct genl_ops EH_gnl_ops[] = {
     {
         .cmd = EH_CMD_REGISTER,
         .flags = 0,
-        .policy = N_genl_policy,
+        .policy = EH_genl_policy,
         .doit = do_cmd_register,
         .dumpit = NULL,
     },
@@ -480,7 +528,7 @@ struct genl_ops EH_gnl_ops[] = {
     {
         .cmd = EH_CMD_UNREGISTER,
         .flags = 0,
-        .policy = N_genl_policy,
+        .policy = EH_genl_policy,
         .doit = do_cmd_unregister,
         .dumpit = NULL,
     },
@@ -488,7 +536,7 @@ struct genl_ops EH_gnl_ops[] = {
     {
         .cmd = EH_CMD_EVENT,
         .flags = 0,
-        .policy = N_genl_policy,
+        .policy = EH_genl_policy,
         .doit = do_cmd_event,
         .dumpit = NULL,
     },
@@ -522,22 +570,22 @@ static void __exit EH_kernel_exit(void)
 
     PRINT_FLOW("+\n");
 
-    for(s=0; s<sizeof(N_gnl_ops)/sizeof(N_gnl_ops[0]); ++s) {
-        ret = genl_unregister_ops(&N_gnl_family, &N_gnl_ops[s]);
+    for(s=0; s<sizeof(EH_gnl_ops)/sizeof(EH_gnl_ops[0]); ++s) {
+        ret = genl_unregister_ops(&EH_gnl_family, &EH_gnl_ops[s]);
         if(ret != 0){
             PRINT_ERR("EH unregister ops %d failed: %i\n", (int)s, ret);
         }
     }
 
     /*unregister the family*/
-	ret = genl_unregister_family(&N_gnl_family);
+	ret = genl_unregister_family(&EH_gnl_family);
 	if(ret !=0){
         PRINT_ERR("EH unregister family failed: %i\n",ret);
     }
     PRINT_FLOW("- event hub unloaded\n");
 }
 
-int EH_send_event(int group_id, const EH_message_event *event)
+int EH_send_event(const char *from_who, int group_id, const struct EH_message_event *event)
 {
     //TODO
 }

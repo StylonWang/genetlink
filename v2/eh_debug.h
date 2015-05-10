@@ -6,25 +6,25 @@
     // debug macros for kernel space 
     #define PRINT_FLOW(fmt, args...) \
         do { \
-            printk(KERN_INFO"[%s:%d]" fmt, __FUNCTION__, __LINE__, ##args); \    
-        }
+            printk(KERN_INFO"[%s:%d]" fmt, __FUNCTION__, __LINE__, ##args); \
+        } while(0)
 
     #define PRINT_ERR(fmt, args...) \
         do { \
             printk(KERN_ERR"[%s:%d][Error]" fmt, __FUNCTION__, __LINE__, ##args); \
-        }
+        } while(0)
 
 #else
     // debug macros for user space 
     #define PRINT_FLOW(fmt, args...) \
         do { \
-            fprintf(stderr, "[%s:%d]" fmt, __FUNCTION__, __LINE__, ##args); \    
-        }
+            fprintf(stderr, "[%s:%d]" fmt, __FUNCTION__, __LINE__, ##args); \
+        } while(0)
 
     #define PRINT_ERR(fmt, args...) \
         do { \
             fprintf(stderr, "[%s:%d][Error]" fmt, __FUNCTION__, __LINE__, ##args); \
-        }
+        } while(0)
 
 #endif //__KERNEL
 

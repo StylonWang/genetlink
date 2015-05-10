@@ -23,7 +23,8 @@ enum {
 	EH_CMD_UNSPEC,
 	EH_CMD_REGISTER,
     EH_CMD_UNREGISTER,
-	__EH_CMD_EVENT,
+    EH_CMD_EVENT,
+	__EH_CMD_MAX,
 };
 #define EH_CMD_MAX (__EH_CMD_MAX - 1)
 
@@ -31,20 +32,20 @@ enum {
 #define EH_PARAM_MAX (6)
 
 struct EH_message_register {
-    char who[N_NAME_MAX];
+    char who[EH_NAME_MAX];
     int group_id;
-    int param[N_PARAM_MAX];
+    int param[EH_PARAM_MAX];
 };
 
 struct EH_message_unregister {
-    char who[N_NAME_MAX];
+    char who[EH_NAME_MAX];
     int group_id;
 };
 
 struct EH_message_event {
-    char from_who[N_NAME_MAX];
+    char from_who[EH_NAME_MAX];
     int to_group_id;
-    int param[N_PARAM_MAX];
+    int param[EH_PARAM_MAX];
 };
 
 #endif //__EH_CMD_H__
