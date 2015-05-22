@@ -15,7 +15,7 @@ endif
 default::
 	$(MAKE) -C $(KERNELDIR) SUBDIRS=`pwd` modules
 	$(CROSS_COMPILE)strip --strip-debug *.ko
-#	$(CROSS_COMPILE)gcc -o user user.c
+	$(CROSS_COMPILE)gcc -o user user.c
 #	$(CROSS_COMPILE)gcc -o user2 user2.c
 
 clean::

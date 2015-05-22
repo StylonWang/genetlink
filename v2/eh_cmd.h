@@ -38,13 +38,15 @@ struct EH_message_register {
 };
 
 struct EH_message_unregister {
-    char who[EH_NAME_MAX];
-    int group_id;
+    int handle;
 };
 
 struct EH_message_event {
+    int handle;
+
     char from_who[EH_NAME_MAX];
     int to_group_id;
+    int event_id;
     int param[EH_PARAM_MAX];
 };
 
