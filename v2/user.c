@@ -160,6 +160,7 @@ static int get_family_id(int sd)
     return id;
 }
 
+/*
 int EH_user_init(struct EH_user_object *obj)
 {
    memset(obj, 0, sizeof(*obj));
@@ -184,6 +185,7 @@ void EH_user_exit(struct EH_user_object *obj)
     close(obj->nl_sd);
     memset(obj, 0, sizeof(*obj));
 }
+*/
 
 int EH_user_register(struct EH_user_object *obj, const char *who, int group_id, int *param, int param_len)
 {
@@ -195,6 +197,20 @@ int EH_user_register(struct EH_user_object *obj, const char *who, int group_id, 
             char buf[256];
     } req, ans;
     struct nlattr *na;
+
+   memset(obj, 0, sizeof(*obj));
+
+   obj->nl_sd = create_nl_socket(NETLINK_GENERIC, 0);
+   if (obj->nl_sd < 0) {
+           EH_DBG("create failure\n");
+           return -1;
+   }
+   obj->family_id = get_family_id(obj->nl_sd);
+   if(obj->family_id <0) {
+        EH_DBG("unable to get family id\n");
+        close(obj->nl_sd);
+        return -1;
+   }
 
     memset(&msg, 0, sizeof(msg));
     strncpy(msg.who, who, sizeof(msg.who));
@@ -237,8 +253,8 @@ int EH_user_register(struct EH_user_object *obj, const char *who, int group_id, 
        return -1;
    }
    if (rep_len < 0) {
-           EH_DBG("error receiving reply message via Netlink \n");
-           return -1;
+       EH_DBG("error receiving reply message via Netlink \n");
+       return -1;
    }
    if (!NLMSG_OK((&ans.n), rep_len)) {
            EH_DBG("invalid reply message received via Netlink\n");
@@ -250,11 +266,19 @@ int EH_user_register(struct EH_user_object *obj, const char *who, int group_id, 
    na = (struct nlattr *)GENLMSG_DATA(&ans);
    //char *result = (char *)NLA_DATA(na);
    uint32_t *result = (uint32_t *)NLA_DATA(na);
+   int handle = ((int)(long)*result);
 
-   return ((int)(long)*result);
+   if(handle<0) {
+       EH_DBG("failed to get handle\n");
+       return handle;
+   }
+   else {
+       obj->handle = handle;
+       return 0;
+   }
 }
 
-void EH_user_unregister(struct EH_user_object *obj, int handle)
+void EH_user_unregister(struct EH_user_object *obj)
 {
     struct EH_message_unregister msg;
 
@@ -266,67 +290,70 @@ void EH_user_unregister(struct EH_user_object *obj, int handle)
     struct nlattr *na;
 
     memset(&msg, 0, sizeof(msg));
-    msg.handle = handle;
+    msg.handle = obj->handle;
 
-   /* Send command needed */
-   req.n.nlmsg_len = NLMSG_LENGTH(GENL_HDRLEN);
-   req.n.nlmsg_type = obj->family_id;
-   req.n.nlmsg_flags = NLM_F_REQUEST;
-   req.n.nlmsg_seq = 60;
-   req.n.nlmsg_pid = getpid();
-   req.g.cmd = EH_CMD_UNREGISTER;      
+    /* Send command needed */
+    req.n.nlmsg_len = NLMSG_LENGTH(GENL_HDRLEN);
+    req.n.nlmsg_type = obj->family_id;
+    req.n.nlmsg_flags = NLM_F_REQUEST;
+    req.n.nlmsg_seq = 60;
+    req.n.nlmsg_pid = getpid();
+    req.g.cmd = EH_CMD_UNREGISTER;      
 
-   /*compose message */
-   na = (struct nlattr *)GENLMSG_DATA(&req);
-   na->nla_type = EH_ATTR_UNREGISTER;
-   int mlength = sizeof(msg);
-   na->nla_len = mlength + NLA_HDRLEN; //message length
-   memcpy((void *)NLA_DATA(na), &msg, mlength);
-   req.n.nlmsg_len += NLMSG_ALIGN(na->nla_len);
+    /*compose message */
+    na = (struct nlattr *)GENLMSG_DATA(&req);
+    na->nla_type = EH_ATTR_UNREGISTER;
+    int mlength = sizeof(msg);
+    na->nla_len = mlength + NLA_HDRLEN; //message length
+    memcpy((void *)NLA_DATA(na), &msg, mlength);
+    req.n.nlmsg_len += NLMSG_ALIGN(na->nla_len);
 
-   /*send message */
-   struct sockaddr_nl nladdr;
-   int r;
+    /*send message */
+    struct sockaddr_nl nladdr;
+    int r;
 
-   memset(&nladdr, 0, sizeof(nladdr));
-   nladdr.nl_family = AF_NETLINK;
+    memset(&nladdr, 0, sizeof(nladdr));
+    nladdr.nl_family = AF_NETLINK;
 
-   r = sendto(obj->nl_sd, (char *)&req, req.n.nlmsg_len, 0,
+    r = sendto(obj->nl_sd, (char *)&req, req.n.nlmsg_len, 0,
               (struct sockaddr *)&nladdr, sizeof(nladdr));
 
-   int rep_len = recv(obj->nl_sd, &ans, sizeof(ans), 0);
-   /* Validate response message */
-   if (ans.n.nlmsg_type == NLMSG_ERROR) {  /* error */
+    int rep_len = recv(obj->nl_sd, &ans, sizeof(ans), 0);
+    /* Validate response message */
+    if (ans.n.nlmsg_type == NLMSG_ERROR) {  /* error */
        struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(&ans);      
        EH_DBG("error received NACK, error=%d msg type=%d seq=%d, pid=%d - leaving \n", 
        err->error, err->msg.nlmsg_type, err->msg.nlmsg_seq, err->msg.nlmsg_pid);
        EH_DBG("my pid=%d\n", getpid());
        return; // -1;
-   }
-   if (rep_len < 0) {
+    }
+    if (rep_len < 0) {
            EH_DBG("error receiving reply message via Netlink \n");
            return; // -1;
-   }
-   if (!NLMSG_OK((&ans.n), rep_len)) {
+    }
+    if (!NLMSG_OK((&ans.n), rep_len)) {
            EH_DBG("invalid reply message received via Netlink\n");
            return; // -1;
-   }
+    }
 
-   rep_len = GENLMSG_PAYLOAD(&ans.n);
-   /*parse reply message */
-   na = (struct nlattr *)GENLMSG_DATA(&ans);
-   //char *result = (char *)NLA_DATA(na);
-   uint32_t *result = (uint32_t *)NLA_DATA(na);
+    rep_len = GENLMSG_PAYLOAD(&ans.n);
+    /*parse reply message */
+    na = (struct nlattr *)GENLMSG_DATA(&ans);
+    //char *result = (char *)NLA_DATA(na);
+    uint32_t *result = (uint32_t *)NLA_DATA(na);
 
-   return ; //((int)(long)*result);
+    close(obj->nl_sd);
+    memset(obj, 0, sizeof(*obj));
+
+    return ; //((int)(long)*result);
 }
 
-int EH_user_recv_event(struct EH_user_object *obj, int handle, struct EH_message_event *event, int timeout_milisec)
+int EH_user_recv_event(struct EH_user_object *obj, struct EH_message_event *event, int timeout_milisec)
 {
     return -EINVAL;
 }
 
-int EH_user_send_event(struct EH_user_object *obj, int handle, struct EH_message_event *event, int timeout_milisec)
+int EH_user_send_event(struct EH_user_object *obj, struct EH_message_event *event, int timeout_milisec)
 {
     return -EINVAL;
 }
@@ -334,14 +361,14 @@ int EH_user_send_event(struct EH_user_object *obj, int handle, struct EH_message
 char who[EH_NAME_MAX] = "user";
 int group = 254;
 struct EH_user_object ehobj;
-int handle;
+//int handle;
 
 void signal_handler(int signo)
 {
     fprintf(stderr, "signal %d received\n", signo);
 
-    EH_user_unregister(&ehobj, handle);
-    EH_user_exit(&ehobj);
+    EH_user_unregister(&ehobj);
+//    EH_user_exit(&ehobj);
 
     fprintf(stderr, "exit\n");
     exit(0);
@@ -377,20 +404,22 @@ int main(int argc, char **argv)
     signal(SIGINT, SIG_IGN);
     signal(SIGTERM, SIG_IGN);
 
+/*
     rc = EH_user_init(&ehobj);
     if(rc<0) {
         fprintf(stderr, "EH failed to init: %d\n", rc);
         return -1;
     }
     fprintf(stderr, "EH inited\n");
+*/
 
-    handle = EH_user_register(&ehobj, who, group, NULL, 0);
-    if(handle<0) {
-        fprintf(stderr, "EH register failed: %d\n", handle);
+    rc = EH_user_register(&ehobj, who, group, NULL, 0);
+    if(rc<0) {
+        fprintf(stderr, "EH register failed: %d\n", rc);
         return -1;
     }
 
-    fprintf(stderr, "EH registered, handle=%x\n", handle);
+    fprintf(stderr, "EH registered, handle=%x\n", ehobj.handle);
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -399,7 +428,7 @@ int main(int argc, char **argv)
     while(1) {
         struct EH_message_event event;
 
-        rc = EH_user_recv_event(&ehobj, handle, &event, 1500);
+        rc = EH_user_recv_event(&ehobj, &event, 1500);
         if(rc<0 && rc==-EAGAIN) {
             continue;
         }
@@ -410,8 +439,7 @@ int main(int argc, char **argv)
         
     } // end of while
 
-    EH_user_unregister(&ehobj, handle);
-    EH_user_exit(&ehobj);
+    EH_user_unregister(&ehobj);
 
     return 0;
 }
