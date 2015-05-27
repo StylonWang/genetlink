@@ -256,7 +256,69 @@ int EH_user_register(struct EH_user_object *obj, const char *who, int group_id, 
 
 void EH_user_unregister(struct EH_user_object *obj, int handle)
 {
+    struct EH_message_unregister msg;
 
+    struct {
+            struct nlmsghdr n;
+            struct genlmsghdr g;
+            char buf[256];
+    } req, ans;
+    struct nlattr *na;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.handle = handle;
+
+   /* Send command needed */
+   req.n.nlmsg_len = NLMSG_LENGTH(GENL_HDRLEN);
+   req.n.nlmsg_type = obj->family_id;
+   req.n.nlmsg_flags = NLM_F_REQUEST;
+   req.n.nlmsg_seq = 60;
+   req.n.nlmsg_pid = getpid();
+   req.g.cmd = EH_CMD_UNREGISTER;      
+
+   /*compose message */
+   na = (struct nlattr *)GENLMSG_DATA(&req);
+   na->nla_type = EH_ATTR_UNREGISTER;
+   int mlength = sizeof(msg);
+   na->nla_len = mlength + NLA_HDRLEN; //message length
+   memcpy((void *)NLA_DATA(na), &msg, mlength);
+   req.n.nlmsg_len += NLMSG_ALIGN(na->nla_len);
+
+   /*send message */
+   struct sockaddr_nl nladdr;
+   int r;
+
+   memset(&nladdr, 0, sizeof(nladdr));
+   nladdr.nl_family = AF_NETLINK;
+
+   r = sendto(obj->nl_sd, (char *)&req, req.n.nlmsg_len, 0,
+              (struct sockaddr *)&nladdr, sizeof(nladdr));
+
+   int rep_len = recv(obj->nl_sd, &ans, sizeof(ans), 0);
+   /* Validate response message */
+   if (ans.n.nlmsg_type == NLMSG_ERROR) {  /* error */
+       struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(&ans);      
+       EH_DBG("error received NACK, error=%d msg type=%d seq=%d, pid=%d - leaving \n", 
+       err->error, err->msg.nlmsg_type, err->msg.nlmsg_seq, err->msg.nlmsg_pid);
+       EH_DBG("my pid=%d\n", getpid());
+       return; // -1;
+   }
+   if (rep_len < 0) {
+           EH_DBG("error receiving reply message via Netlink \n");
+           return; // -1;
+   }
+   if (!NLMSG_OK((&ans.n), rep_len)) {
+           EH_DBG("invalid reply message received via Netlink\n");
+           return; // -1;
+   }
+
+   rep_len = GENLMSG_PAYLOAD(&ans.n);
+   /*parse reply message */
+   na = (struct nlattr *)GENLMSG_DATA(&ans);
+   //char *result = (char *)NLA_DATA(na);
+   uint32_t *result = (uint32_t *)NLA_DATA(na);
+
+   return ; //((int)(long)*result);
 }
 
 int EH_user_recv_event(struct EH_user_object *obj, int handle, struct EH_message_event *event, int timeout_milisec)
