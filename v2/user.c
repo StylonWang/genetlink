@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <signal.h>
 #include <stdint.h>
+#include <sys/select.h>
 
 #include <linux/genetlink.h>
 
@@ -348,9 +349,86 @@ void EH_user_unregister(struct EH_user_object *obj)
     return ; //((int)(long)*result);
 }
 
+// @param timeout_milisec   >0 for waiting with timeout, <0 for blocking, ==0 for polling(no wait)
+// @return <0 is error code, ==0 means no data to recv, 1 means event received
 int EH_user_recv_event(struct EH_user_object *obj, struct EH_message_event *event, int timeout_milisec)
 {
-    return -EINVAL;
+    struct {
+            struct nlmsghdr n;
+            struct genlmsghdr g;
+            char buf[256];
+    } ans;
+    int rep_len; 
+    int rc;
+    fd_set rset;
+    struct timeval tv;
+    struct nlattr *na;
+
+    FD_ZERO(&rset);
+    FD_SET(obj->nl_sd, &rset);
+
+    if(timeout_milisec>0) { // wait for timeout
+
+        if(timeout_milisec>1000) {
+            tv.tv_sec = timeout_milisec/1000;
+        }
+        tv.tv_usec = (timeout_milisec-(tv.tv_sec*1000)) *1000;
+
+        EH_DBG("select timeout %d:%ld\n", (int)tv.tv_sec, (long)tv.tv_usec);
+        rc = select(obj->nl_sd+1, &rset, NULL, NULL, &tv);
+
+    } else if(timeout_milisec<0) { // wait indefinitely if no data
+
+        EH_DBG("select no timeout \n");
+        rc = select(obj->nl_sd+1, &rset, NULL, NULL, NULL);
+
+    } else { // return immediately if no data
+        tv.tv_sec = 0;
+        tv.tv_usec = 0;
+
+        EH_DBG("select timeout %d:%ld\n", (int)tv.tv_sec, (long)tv.tv_usec);
+        rc = select(obj->nl_sd+1, &rset, NULL, NULL, &tv);
+    }
+
+    if(rc<0) {
+        EH_DBG("select failed: %s\n", strerror(errno));
+        return -EIO;
+    }
+    else if(!FD_ISSET(obj->nl_sd, &rset) || rc==0){
+        return 0;
+    }
+    
+    rep_len = recv(obj->nl_sd, &ans, sizeof(ans), 0);
+    /* Validate response message */
+    if (ans.n.nlmsg_type == NLMSG_ERROR) {  /* error */
+       struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(&ans);      
+       EH_DBG("error received NACK, error=%d msg type=%d seq=%d, pid=%d - leaving \n", 
+       err->error, err->msg.nlmsg_type, err->msg.nlmsg_seq, err->msg.nlmsg_pid);
+       EH_DBG("my pid=%d\n", getpid());
+       return -EIO;
+    }
+    if (rep_len <= 0) {
+           EH_DBG("error receiving reply message via Netlink, rep_len=%d \n", rep_len);
+           return -EIO;
+    }
+    if (!NLMSG_OK((&ans.n), rep_len)) {
+           EH_DBG("invalid reply message received via Netlink\n");
+           return -EIO;
+    }
+
+    rep_len = GENLMSG_PAYLOAD(&ans.n);
+    /*parse reply message */
+    na = (struct nlattr *)GENLMSG_DATA(&ans);
+    uint32_t *result = (uint32_t *)NLA_DATA(na);
+    struct EH_message_event *revent = (struct EH_message_event *)NLA_DATA(na);
+
+    if(revent->handle != obj->handle) {
+        return -EFAULT;
+    }
+
+    memcpy(event, revent, sizeof(*event));
+
+    return 1;
 }
 
 int EH_user_send_event(struct EH_user_object *obj, struct EH_message_event *event, int timeout_milisec)
