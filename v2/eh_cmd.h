@@ -44,8 +44,8 @@ struct EH_message_unregister {
 struct EH_message_event {
     int handle;
 
-    char from_who[EH_NAME_MAX];
-    int to_group_id;
+//    char from_who[EH_NAME_MAX];
+//    int to_group_id;
     int event_id;
     int param[EH_PARAM_MAX];
 };

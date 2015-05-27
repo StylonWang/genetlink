@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <sys/select.h>
+#include <time.h>
 
 #include <linux/genetlink.h>
 
@@ -431,9 +432,71 @@ int EH_user_recv_event(struct EH_user_object *obj, struct EH_message_event *even
     return 1;
 }
 
+//TODO: implement timeout in waiting for return message
 int EH_user_send_event(struct EH_user_object *obj, struct EH_message_event *event, int timeout_milisec)
 {
-    return -EINVAL;
+    struct {
+        struct nlmsghdr n;
+        struct genlmsghdr g;
+        char buf[256];
+    } req, ans;
+    struct nlattr *na;
+
+    event->handle = obj->handle;
+
+    /* Send command needed */
+    req.n.nlmsg_len = NLMSG_LENGTH(GENL_HDRLEN);
+    req.n.nlmsg_type = obj->family_id;
+    req.n.nlmsg_flags = NLM_F_REQUEST;
+    req.n.nlmsg_seq = 60;
+    req.n.nlmsg_pid = getpid();
+    req.g.cmd = EH_CMD_EVENT;      
+
+    /*compose message */
+    na = (struct nlattr *)GENLMSG_DATA(&req);
+    na->nla_type = EH_ATTR_EVENT;
+    int mlength = sizeof(*event);
+    na->nla_len = mlength + NLA_HDRLEN; //message length
+    memcpy((void *)NLA_DATA(na), event, mlength);
+    req.n.nlmsg_len += NLMSG_ALIGN(na->nla_len);
+
+    /*send message */
+    struct sockaddr_nl nladdr;
+    int r;
+
+    memset(&nladdr, 0, sizeof(nladdr));
+    nladdr.nl_family = AF_NETLINK;
+
+    r = sendto(obj->nl_sd, (char *)&req, req.n.nlmsg_len, 0,
+              (struct sockaddr *)&nladdr, sizeof(nladdr));
+
+    int rep_len = recv(obj->nl_sd, &ans, sizeof(ans), 0);
+    /* Validate response message */
+    if (ans.n.nlmsg_type == NLMSG_ERROR) {  /* error */
+       struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(&ans);      
+       EH_DBG("error received NACK, error=%d msg type=%d seq=%d, pid=%d - leaving \n", 
+       err->error, err->msg.nlmsg_type, err->msg.nlmsg_seq, err->msg.nlmsg_pid);
+       EH_DBG("my pid=%d\n", getpid());
+       return -1;
+    }
+    if (rep_len < 0) {
+        EH_DBG("error receiving reply message via Netlink \n");
+        return -1;
+    }
+    if (!NLMSG_OK((&ans.n), rep_len)) {
+        EH_DBG("invalid reply message received via Netlink\n");
+        return -1;
+    }
+
+    rep_len = GENLMSG_PAYLOAD(&ans.n);
+    /*parse reply message */
+    na = (struct nlattr *)GENLMSG_DATA(&ans);
+    //char *result = (char *)NLA_DATA(na);
+    uint32_t *result = (uint32_t *)NLA_DATA(na);
+    r = ((int)(long)*result);
+
+    EH_DBG("- r=%d\n", r);
+    return r;
 }
 
 char who[EH_NAME_MAX] = "user";
@@ -455,18 +518,20 @@ void signal_handler(int signo)
 int main(int argc, char **argv)
 {
     int rc;
+    int sender = 1;
 
     // parsing command line arguments
     while(1) {
         int c;
 
-        if( (c=getopt(argc, argv, "hg:w:")) == -1) break;
+        if( (c=getopt(argc, argv, "hg:w:r")) == -1) break;
 
         switch(c) {
         default:
         case 'h':
         case '?':
-            fprintf(stderr, "%s [-h] [-g group_id] [-w who]\n\n", argv[0]);
+            fprintf(stderr, "%s [-h] [-g group_id] [-w who] [-r]\n\n", argv[0]);
+            exit(0);
             break;
 
         case 'w':
@@ -476,6 +541,9 @@ int main(int argc, char **argv)
         case 'g':
             group = atoi(optarg);
             break;
+
+        case 'r':
+            sender = 0;
         }
     }
 
@@ -491,6 +559,8 @@ int main(int argc, char **argv)
     fprintf(stderr, "EH inited\n");
 */
 
+    fprintf(stderr, "PID %d register group=%d who=%s\n", getpid(), group, who);
+
     rc = EH_user_register(&ehobj, who, group, NULL, 0);
     if(rc<0) {
         fprintf(stderr, "EH register failed: %d\n", rc);
@@ -502,17 +572,54 @@ int main(int argc, char **argv)
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    fprintf(stderr, "start recving event \n");
-    while(1) {
-        struct EH_message_event event;
+    srand(time(NULL));
 
-        rc = EH_user_recv_event(&ehobj, &event, 1500);
-        if(rc<0 && rc==-EAGAIN) {
-            continue;
+    fprintf(stderr, "start %s event \n", sender? "sending" : "receiving");
+
+/*
+    struct EH_message_event sevent;
+    sevent.event_id = rand() % 100;
+    fprintf(stderr, "sending event %d\n", sevent.event_id);
+    rc = EH_user_send_event(&ehobj, &sevent, 500);
+    if(rc<0 && rc==-EAGAIN) {
+    }
+    else if(rc<0) {
+        fprintf(stderr, "failed to send event: %s\n", strerror(rc*-1));
+    }
+*/
+
+    while(1) {
+        struct EH_message_event revent, sevent;
+        int count=0;
+
+        if(sender) { //sender
+
+            sevent.event_id = rand() % 100;
+            fprintf(stderr, "sending event %d\n", sevent.event_id);
+            rc = EH_user_send_event(&ehobj, &sevent, 500);
+            if(rc<0 && rc==-EAGAIN) {
+                continue;
+            }
+            else if(rc<0) {
+                fprintf(stderr, "failed to send event: %s\n", strerror(rc*-1));
+            }
+
+            sleep(rand()%5);
         }
-        else if(rc<0) {
-            fprintf(stderr, "failed to recv event: %s\n", strerror(rc*-1));
-            break;
+        else { //receiver
+
+            rc = EH_user_recv_event(&ehobj, &revent, 1500);
+            if(rc<0 && rc==-EAGAIN) {
+                continue;
+            }
+            else if(rc<0) {
+                fprintf(stderr, "failed to recv event: %s\n", strerror(rc*-1));
+                break;
+            }
+
+        }
+
+        if(0==(count++ %4)) {
         }
         
     } // end of while

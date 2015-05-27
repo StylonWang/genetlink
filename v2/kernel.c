@@ -84,7 +84,7 @@ static int EH_register(const struct EH_message_register *msg, struct genl_info *
     int rc=0;
     int i;
 
-    PRINT_FLOW("+\n");
+    PRINT_FLOW("+ group id %d, pid=%d\n", msg->group_id, info->snd_pid);
 
     group = EH_get_group_index(msg->group_id);
     if(-1==group) {
@@ -161,7 +161,7 @@ static int EH_unregister(const struct EH_message_unregister *msg, struct genl_in
     int group=-1, member=-1;
     int rc=0;
 
-    PRINT_FLOW("+\n");
+    PRINT_FLOW("+ handle=%d\n", msg->handle);
 
     #if 0
     group = EH_get_group_index(msg->group_id);
@@ -215,11 +215,14 @@ static int EH_send_event_to(int group, int member, const struct EH_message_event
     int rc=0;
 	void *msg_head;
 
+    PRINT_FLOW("+\n");
+
     /* send a message back*/
     /* allocate some memory, since the size is not yet known use NLMSG_GOODSIZE*/	
     skb = genlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
     if (skb == NULL) {
         rc = -ENOMEM;
+        PRINT_ERR("genlmsg_new failed\n");
         goto out;
     }
 
@@ -235,10 +238,12 @@ static int EH_send_event_to(int group, int member, const struct EH_message_event
    	msg_head = genlmsg_put(skb, 0, 0 /*info->snd_seq+1*/, &EH_gnl_family, 0, EH_CMD_EVENT);
     if (msg_head == NULL) {
         rc = -ENOMEM;
+        PRINT_ERR("genlmsg_put failed\n");
         goto out;
     }
     rc = nla_put(skb, EH_ATTR_EVENT, sizeof(*msg), msg);
     if (rc != 0) {
+        PRINT_ERR("nla_put failed\n");
         goto out;
     }
 
@@ -248,10 +253,12 @@ static int EH_send_event_to(int group, int member, const struct EH_message_event
     /* send the message back */
     rc = genlmsg_unicast(net /*genl_info_net(info)*/, skb, g_context.groups[group].members[member].pid);
     if (rc != 0) {
+       PRINT_ERR("rc=%d\n", rc);
        goto out;
     }
 
 out:
+    PRINT_FLOW(" - rc=%d\n", rc);
     return rc;
 }
 
@@ -262,7 +269,7 @@ static int EH_user_send_event_to_group(const struct EH_message_event *msg /*stru
     int rc=0;
     int i;
 
-    PRINT_FLOW("+\n");
+    PRINT_FLOW("+ handle=%d\n", msg->handle);
 
 #if 0
     group = EH_get_group_index(msg->to_group_id);
@@ -285,16 +292,23 @@ static int EH_user_send_event_to_group(const struct EH_message_event *msg /*stru
         rc = -EINVAL;
         goto out;
     }
+
+    PRINT_FLOW("my group=%d, member=%d\n", group, member);
 #endif
 
     for(i=0; i<EH_GROUP_MEMBER_MAX; ++i) {
         if(i==member) continue; // do not send to myself
+        if(0==g_context.groups[group].members[i].pid) continue; 
 
+        PRINT_FLOW("send event to %d pid %d\n", i,
+        g_context.groups[group].members[i].pid
+            );
         rc = EH_send_event_to(group, member, msg, g_context.groups[group].members[member]._net);
         if(rc) {
-            PRINT_ERR("cannot send event to %s %ld\n", 
+            PRINT_ERR("cannot send event to %s %ld, rc=%d\n", 
                       g_context.groups[group].members[member].who,
-                      (unsigned long)g_context.groups[group].members[member].pid
+                      (unsigned long)g_context.groups[group].members[member].pid,
+                      rc
                       );
         }
     }
@@ -493,10 +507,6 @@ static int do_cmd_event(struct sk_buff *skb_2, struct genl_info *info)
             PRINT_ERR("error while receiving data\n");
             rc = -EINVAL;
             goto out;
-        }
-        if ( msg->to_group_id <=0 ) {
-            rc = -EINVAL;
-            goto out; 
         }
 	}
     else {
